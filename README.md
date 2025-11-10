@@ -20,15 +20,23 @@ This simulates a real-world **ETL + BI reporting pipeline**, with full automatio
 
 ##  System Architecture
 
-[SCHEDULER]
+SCHEDULER
+
 ↓
-[HTTP GET: FakeStore API]
+
+HTTP GET: FakeStore API
+
 ↓
-[Python Script: data_pipeline.py → SQLite DB]
+
+Python Script: data_pipeline.py → SQLite DB
+
 ↓
-[Dashboard Refresh (Power BI / Jupyter)]
+
+Dashboard Refresh (Power BI / Jupyter)
+
 ↓
-[send_report.py → Gmail Notification]
+
+send_report.py → Gmail Notification
 
 
 Automation built with **Make** or **Zapier**:

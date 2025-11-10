@@ -78,3 +78,21 @@ python send_report.py
 | **3. Storage**        | Maintain daily data history            | `sqlite3` database (append mode)                     |
 | **4. Visualization**  | Generate category-level insights       | Power BI / Matplotlib bar charts                     |
 | **5. Reporting**      | Notify team automatically              | Python `smtplib` email trigger / Zapier Gmail module |
+
+
+## Workflow Automation Setup (Make / Zapier)
+| Step | Module                   | Description                  |
+| ---- | ------------------------ | ---------------------------- |
+| 1  | **Scheduler**            | Trigger daily (e.g. 9:00 AM) |
+| 2  | **HTTP Module**          | Fetch data from API          |
+| 3  | **Code Module (Python)** | Clean and store data         |
+| 4  | **Database Module**      | Append new records           |
+| 5  | **Gmail / Slack Module** | Send report or alert         |
+
+## Expected Output
+- Daily updated sales_data.db (historical product data)
+- Interactive dashboard with auto-refresh
+- Email confirmation with timestamp and status
+- Workflow runs fully automated without manual input
+
+ 

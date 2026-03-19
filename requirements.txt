@@ -1,0 +1,18 @@
+# Automated Data Workflow - Dependencies
+# Install with: pip install -r requirements.txt
+
+# Data processing
+pandas>=2.0.0
+requests>=2.28.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Note: The following are Python standard library modules (no install needed):
+# - sqlite3
+# - smtplib
+# - email
+# - logging
+# - datetime
+# - time
+# - sys

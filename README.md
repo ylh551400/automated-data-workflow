@@ -96,7 +96,7 @@ automated-data-workflow/
 
 ### 1. Clone the repo
 ```bash
-git clone https://github.com/yourusername/automated-data-workflow.git
+git clone https://github.com/ylh551400/automated-data-workflow.git
 cd automated-data-workflow
 ```
 

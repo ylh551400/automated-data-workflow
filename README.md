@@ -1,6 +1,6 @@
 # Automated Data Workflow
 
-End-to-end automated data analysis pipeline with built-in data quality monitoring, error handling, and operational alerting.
+End-to-end automated data analysis pipeline with built-in data quality monitoring, error handling, and operational alerting, **eliminating manual monitoring effort**.
 
 ---
 

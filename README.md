@@ -48,9 +48,9 @@ All configuration lives in `config.py` and can be overridden with environment va
 
 The email contains a status banner, KPI tiles (market cap, volume, BTC), an alert box when thresholds are crossed, gainers/losers tables, rank changes and composition changes since the previous snapshot, the charts below, and a pipeline-health section with the per-rule filter counts.
 
-| 24h movers | Market cap trend |
+| 24h movers | Market cap concentration |
 |---|---|
-| ![movers](docs/sample_movers.png) | ![trend](docs/sample_trend.png) |
+| ![movers](docs/sample_movers.png) | ![concentration](<img width="1250" height="850" alt="Screenshot 2026-09-16 133615" src="https://github.com/user-attachments/assets/b1e99b81-da32-412b-8d1d-8e37e70462f0" />) |
 
 Status is encoded in the subject so the inbox works as a monitor:
 

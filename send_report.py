@@ -1,298 +1,251 @@
 """
-Report Notification Script
-- Sends daily summary email with pipeline metrics
-- Differentiates between success/warning/failure states
-- Includes actionable information for operations team
+Report delivery: renders an HTML email (charts inline) and sends it over SMTP.
+
+- Subject line encodes status + headline numbers so the inbox alone is a dashboard
+- HTML body with a plain-text alternative for clients that block HTML
+- Charts embedded as related MIME parts (no external image hosting needed)
+- Always writes a browser-viewable preview to reports/latest_report.html
+- Credentials come from environment variables only (see config.py)
 """
 
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from datetime import datetime
-import sqlite3
 import logging
-import sys
+import os
+import smtplib
+from datetime import datetime, timezone
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
+from pathlib import Path
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SENDER_EMAIL = "your_email@gmail.com"
-SENDER_PASSWORD = "your_app_password"  # Use App Password, not regular password
-RECIPIENT_EMAILS = ["recipient_email@gmail.com"]  # Can be a list
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-DB_PATH = "sales_data.db"
-TABLE_NAME = "daily_sales"
+import config
+from charts import compact_usd
 
-# ============================================================
-# LOGGING SETUP
-# ============================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
+TEMPLATE_DIR = config.BASE_DIR / "templates"
 
-# ============================================================
-# DATABASE METRICS COLLECTION
-# ============================================================
-def get_database_metrics() -> dict:
-    """
-    Query database for reporting metrics.
-    Returns summary stats for email content.
-    """
-    metrics = {
-        'total_records': 0,
-        'today_records': 0,
-        'categories': [],
-        'avg_price': 0.0,
-        'date_range': {'min': 'N/A', 'max': 'N/A'}
-    }
-    
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Check if table exists
-        cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{TABLE_NAME}'")
-        if not cursor.fetchone():
-            logger.warning("Database table does not exist yet")
-            return metrics
-        
-        # Total record count
-        cursor.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}")
-        metrics['total_records'] = cursor.fetchone()[0]
-        
-        # Today's record count
-        today = datetime.now().strftime("%Y-%m-%d")
-        cursor.execute(f"SELECT COUNT(*) FROM {TABLE_NAME} WHERE fetch_date = ?", (today,))
-        metrics['today_records'] = cursor.fetchone()[0]
-        
-        # Distinct categories
-        cursor.execute(f"SELECT DISTINCT category FROM {TABLE_NAME}")
-        metrics['categories'] = [row[0] for row in cursor.fetchall()]
-        
-        # Average price
-        cursor.execute(f"SELECT AVG(price) FROM {TABLE_NAME}")
-        avg = cursor.fetchone()[0]
-        metrics['avg_price'] = round(avg, 2) if avg else 0.0
-        
-        # Date range
-        cursor.execute(f"SELECT MIN(fetch_date), MAX(fetch_date) FROM {TABLE_NAME}")
-        row = cursor.fetchone()
-        metrics['date_range'] = {'min': row[0] or 'N/A', 'max': row[1] or 'N/A'}
-        
-        conn.close()
-        
-    except sqlite3.Error as e:
-        logger.error(f"Database query failed: {e}")
-    
-    return metrics
+STATUS_STYLE = {
+    "SUCCESS": {"bg": "#0ca30c", "fg": "#ffffff", "icon": "✅", "label": "Pipeline succeeded"},
+    "SKIPPED": {"bg": "#fab219", "fg": "#0b0b0b", "icon": "⚠️", "label": "Snapshot already stored today"},
+    "FAILED": {"bg": "#d03b3b", "fg": "#ffffff", "icon": "\U0001f6a8", "label": "Pipeline failed - action required"},
+}
 
 
-# ============================================================
-# EMAIL CONTENT GENERATION
-# ============================================================
-def generate_email_content(pipeline_result: dict = None) -> tuple[str, str]:
-    """
-    Generate email subject and body based on pipeline results.
-    
-    Args:
-        pipeline_result: dict from run_pipeline() or None for standalone report
-    
-    Returns:
-        tuple: (subject, body)
-    """
-    db_metrics = get_database_metrics()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Determine status and subject line
-    if pipeline_result:
-        status = pipeline_result.get('status', 'UNKNOWN')
-        records_stored = pipeline_result.get('records_stored', 0)
-        quality = pipeline_result.get('quality_metrics', {})
-    else:
-        status = 'REPORT_ONLY'
-        records_stored = db_metrics['today_records']
-        quality = {}
-    
-    # Subject line with status indicator
-    if status == 'SUCCESS':
-        subject = f"✅ Daily Pipeline SUCCESS | {records_stored} records | {timestamp[:10]}"
-    elif status == 'SKIPPED':
-        subject = f"⚠️ Daily Pipeline SKIPPED | Already ingested | {timestamp[:10]}"
-    elif status == 'FAILED':
-        subject = f"🚨 ALERT: Pipeline FAILED | Action Required | {timestamp[:10]}"
-    else:
-        subject = f"📊 Daily Data Report | {timestamp[:10]}"
-    
-    # Build email body
-    body_lines = [
-        "=" * 50,
-        "AUTOMATED DATA PIPELINE REPORT",
-        "=" * 50,
+# ------------------------------------------------------------------
+# Formatting helpers (exposed to the template)
+# ------------------------------------------------------------------
+def fmt_pct(value, digits: int = 2) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:+.{digits}f}%"
+
+
+def fmt_price(value) -> str:
+    if value is None:
+        return "n/a"
+    if value >= 1000:
+        return f"${value:,.0f}"
+    if value >= 1:
+        return f"${value:,.2f}"
+    return f"${value:.4g}"
+
+
+def fmt_int(value) -> str:
+    return "n/a" if value is None else f"{int(value):,}"
+
+
+def delta_color(value) -> str:
+    """Ink colour for a signed delta (never the series colour)."""
+    if value is None:
+        return "#52514e"
+    return "#006300" if value >= 0 else "#b32d2d"
+
+
+# ------------------------------------------------------------------
+# Content
+# ------------------------------------------------------------------
+def build_subject(pipeline_result: dict, insights: dict | None) -> str:
+    date = pipeline_result.get("fetch_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    status = pipeline_result.get("status", "UNKNOWN")
+    icon = STATUS_STYLE.get(status, {}).get("icon", "\U0001f4ca")
+
+    if status == "FAILED":
+        return f"{icon} [{config.REPORT_TITLE}] Pipeline FAILED - {date}"
+
+    parts = [f"{icon} {config.REPORT_TITLE} {date}"]
+    if insights:
+        if insights.get("btc_price") is not None:
+            parts.append(
+                f"BTC {compact_usd(insights['btc_price'])} ({fmt_pct(insights['btc_change_pct_24h'], 1)})"
+            )
+        cap = compact_usd(insights["total_market_cap"])
+        change = insights.get("total_market_cap_change_pct")
+        suffix = f" ({fmt_pct(change, 1)} d/d)" if change is not None else ""
+        parts.append(f"Top-{insights['coins']} cap {cap}{suffix}")
+    if status == "SKIPPED":
+        parts.append("already ingested")
+    return " | ".join(parts)
+
+
+def _jinja_env() -> Environment:
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATE_DIR)),
+        autoescape=select_autoescape(["html", "j2"]),
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    env.filters.update(
+        pct=fmt_pct, price=fmt_price, usd=compact_usd, num=fmt_int, delta_color=delta_color
+    )
+    return env
+
+
+def render_html(pipeline_result: dict, insights: dict | None, images: dict[str, str]) -> str:
+    """Render the HTML body. `images` maps chart name -> img src (cid: or path)."""
+    template = _jinja_env().get_template("report.html.j2")
+    status = pipeline_result.get("status", "UNKNOWN")
+    return template.render(
+        title=config.REPORT_TITLE,
+        result=pipeline_result,
+        insights=insights,
+        images=images,
+        status=status,
+        style=STATUS_STYLE.get(status, STATUS_STYLE["FAILED"]),
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        repo_url="https://github.com/ylh551400/automated-data-workflow",
+    )
+
+
+def render_text(pipeline_result: dict, insights: dict | None) -> str:
+    """Plain-text alternative with the essentials."""
+    lines = [
+        f"{config.REPORT_TITLE} - {pipeline_result.get('fetch_date')}",
+        f"Status: {pipeline_result.get('status')}",
         "",
-        f"Timestamp: {timestamp}",
-        f"Status: {status}",
-        "",
-        "-" * 30,
-        "TODAY'S INGESTION",
-        "-" * 30,
     ]
-    
-    if pipeline_result:
-        body_lines.extend([
-            f"Records fetched from API: {pipeline_result.get('records_fetched', 'N/A')}",
-            f"Records stored to DB: {records_stored}",
-        ])
-        
-        if quality:
-            body_lines.extend([
-                "",
-                "Data Quality Summary:",
-                f"  - Raw records: {quality.get('raw_records', 'N/A')}",
-                f"  - Invalid price filtered: {quality.get('invalid_price', 0)}",
-                f"  - Invalid category filtered: {quality.get('invalid_category', 0)}",
-                f"  - Invalid rating filtered: {quality.get('invalid_rating', 0)}",
-                f"  - Duplicates removed: {quality.get('duplicates_removed', 0)}",
-                f"  - Clean records: {quality.get('clean_records', 'N/A')}",
-            ])
-        
-        if pipeline_result.get('error_message'):
-            body_lines.extend([
-                "",
-                "⚠️ ERROR DETAILS:",
-                pipeline_result['error_message'],
-            ])
-    
-    body_lines.extend([
-        "",
-        "-" * 30,
-        "DATABASE SUMMARY",
-        "-" * 30,
-        f"Total records in DB: {db_metrics['total_records']}",
-        f"Records added today: {db_metrics['today_records']}",
-        f"Average price: ${db_metrics['avg_price']}",
-        f"Categories: {', '.join(db_metrics['categories']) if db_metrics['categories'] else 'N/A'}",
-        f"Data range: {db_metrics['date_range']['min']} to {db_metrics['date_range']['max']}",
-        "",
-        "-" * 30,
-        "NEXT STEPS",
-        "-" * 30,
-    ])
-    
-    # Actionable recommendations based on status
-    if status == 'FAILED':
-        body_lines.extend([
-            "1. Check pipeline.log for detailed error messages",
-            "2. Verify API endpoint is accessible",
-            "3. Review network/firewall settings",
-            "4. Re-run pipeline manually after fixing issues",
-        ])
-    elif status == 'SKIPPED':
-        body_lines.extend([
-            "1. Data already ingested today - no action needed",
-            "2. If re-ingestion required, clear today's records first",
-        ])
-    elif db_metrics['today_records'] == 0:
-        body_lines.extend([
-            "⚠️ WARNING: No new records today",
-            "1. Verify API is returning data",
-            "2. Check data quality filters aren't too strict",
-        ])
-    else:
-        body_lines.extend([
-            "✓ No action required - pipeline healthy",
-            "✓ Dashboard should refresh automatically",
-        ])
-    
-    body_lines.extend([
-        "",
-        "=" * 50,
-        "This is an automated message from the Data Pipeline.",
-        "Do not reply to this email.",
-        "=" * 50,
-    ])
-    
-    return subject, "\n".join(body_lines)
+    if pipeline_result.get("error_message"):
+        lines += ["ERROR:", pipeline_result["error_message"], ""]
+    if insights:
+        lines += [
+            f"Total market cap (top {insights['coins']}): {compact_usd(insights['total_market_cap'])} "
+            f"({fmt_pct(insights['total_market_cap_change_pct'])} vs {insights['previous_date'] or 'n/a'})",
+            f"24h volume: {compact_usd(insights['total_volume'])}",
+            f"BTC: {fmt_price(insights['btc_price'])} ({fmt_pct(insights['btc_change_pct_24h'])})",
+            "",
+            "Top gainers:",
+            *[f"  {r['symbol']:<6} {fmt_pct(r['price_change_pct_24h']):>9}" for r in insights["top_gainers"]],
+            "Top losers:",
+            *[f"  {r['symbol']:<6} {fmt_pct(r['price_change_pct_24h']):>9}" for r in insights["top_losers"]],
+            "",
+        ]
+        if insights["alerts"]:
+            lines += ["Alerts:", *[f"  - {a}" for a in insights["alerts"]], ""]
+    q = pipeline_result.get("quality_metrics") or {}
+    if q:
+        lines += [
+            "Data quality:",
+            f"  raw={q.get('raw_records')} clean={q.get('clean_records')} "
+            f"price={q.get('invalid_price')} cap={q.get('invalid_market_cap')} rank={q.get('invalid_rank')} "
+            f"change={q.get('invalid_change')} stale={q.get('stale_records')} dup={q.get('duplicates_removed')}",
+        ]
+    for w in pipeline_result.get("warnings", []):
+        lines.append(f"WARNING: {w}")
+    return "\n".join(lines)
 
 
-# ============================================================
-# EMAIL SENDING
-# ============================================================
-def send_email(subject: str, body: str, recipients: list = RECIPIENT_EMAILS) -> bool:
-    """
-    Send email via SMTP with error handling.
-    
-    Returns:
-        bool: True if sent successfully, False otherwise
-    """
+# ------------------------------------------------------------------
+# Assembly + delivery
+# ------------------------------------------------------------------
+def build_email(
+    pipeline_result: dict,
+    insights: dict | None,
+    chart_paths: dict[str, Path],
+    sender: str,
+    recipients: list[str],
+) -> EmailMessage:
+    """Multipart email: text/plain + (text/html with related inline images)."""
+    cids = {name: make_msgid(domain="automated-data-workflow") for name in chart_paths}
+    images = {name: f"cid:{cid[1:-1]}" for name, cid in cids.items()}
+
+    msg = EmailMessage()
+    msg["Subject"] = build_subject(pipeline_result, insights)
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+    msg["Date"] = formatdate(localtime=True)
+    msg.set_content(render_text(pipeline_result, insights))
+    msg.add_alternative(render_html(pipeline_result, insights, images), subtype="html")
+
+    html_part = msg.get_payload()[-1]
+    for name, path in chart_paths.items():
+        html_part.add_related(
+            Path(path).read_bytes(), maintype="image", subtype="png", cid=cids[name],
+            filename=f"{name}.png",
+        )
+    return msg
+
+
+def send_email(msg: EmailMessage) -> bool:
+    """Deliver via SMTP with STARTTLS. Returns True on success."""
     try:
-        msg = MIMEMultipart()
-        msg['Subject'] = subject
-        msg['From'] = SENDER_EMAIL
-        msg['To'] = ", ".join(recipients)
-        msg.attach(MIMEText(body, 'plain'))
-        
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=60) as server:
+            server.ehlo()
             server.starttls()
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.login(config.SMTP_USER, config.SMTP_PASSWORD)
             server.send_message(msg)
-        
-        logger.info(f"Email sent successfully to {recipients}")
+        logger.info("Email sent to %s", msg["To"])
         return True
-        
     except smtplib.SMTPAuthenticationError:
-        logger.error("Email authentication failed - check credentials")
-        return False
-    except smtplib.SMTPException as e:
-        logger.error(f"SMTP error: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to send email: {e}")
-        return False
+        logger.error(
+            "SMTP authentication failed - check SMTP_USER / SMTP_PASSWORD (Gmail needs an App Password)"
+        )
+    except smtplib.SMTPException as exc:
+        logger.error("SMTP error: %s", exc)
+    except OSError as exc:
+        logger.error("Could not reach SMTP server %s:%s - %s", config.SMTP_HOST, config.SMTP_PORT, exc)
+    return False
 
 
-# ============================================================
-# MAIN FUNCTION
-# ============================================================
-def send_report(pipeline_result: dict = None) -> bool:
+def write_preview(pipeline_result: dict, insights: dict | None, chart_paths: dict[str, Path]) -> Path:
+    """Save a browser-viewable copy of the report (images referenced by relative path)."""
+    config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    preview = config.REPORT_DIR / "latest_report.html"
+    images = {}
+    for name, path in chart_paths.items():
+        try:
+            images[name] = Path(os.path.relpath(path, preview.parent)).as_posix()
+        except ValueError:  # different drive on Windows
+            images[name] = Path(path).resolve().as_uri()
+    preview.write_text(render_html(pipeline_result, insights, images), encoding="utf-8")
+    logger.info("Report preview written to %s", preview)
+    return preview
+
+
+def send_report(
+    pipeline_result: dict,
+    insights: dict | None = None,
+    chart_paths: dict[str, Path] | None = None,
+    dry_run: bool = False,
+) -> dict:
     """
-    Main entry point - generates and sends the report email.
-    
-    Args:
-        pipeline_result: Optional dict from data_pipeline.run_pipeline()
-                        If None, generates report from current DB state
-    
-    Returns:
-        bool: True if email sent successfully
+    Build the report, write the preview, and send it unless dry_run or SMTP
+    is not configured. Returns {"sent", "subject", "preview", "skipped_reason"}.
     """
-    logger.info("Generating report email...")
-    
-    subject, body = generate_email_content(pipeline_result)
-    
-    # Print to console for debugging
-    print("\n" + "=" * 50)
-    print("EMAIL PREVIEW")
-    print("=" * 50)
-    print(f"Subject: {subject}")
-    print("-" * 50)
-    print(body)
-    print("=" * 50 + "\n")
-    
-    # Uncomment below to actually send email
-    # return send_email(subject, body)
-    
-    logger.info("Email preview generated (sending disabled - uncomment to enable)")
-    return True
+    chart_paths = chart_paths or {}
+    subject = build_subject(pipeline_result, insights)
+    preview = write_preview(pipeline_result, insights, chart_paths)
+    outcome = {"sent": False, "subject": subject, "preview": str(preview), "skipped_reason": None}
 
+    logger.info("Report subject: %s", subject)
+    if dry_run:
+        outcome["skipped_reason"] = "dry-run"
+        logger.info("Dry run - email not sent")
+        return outcome
+    if not config.email_configured():
+        outcome["skipped_reason"] = "smtp-not-configured"
+        logger.warning("SMTP_USER / SMTP_PASSWORD / REPORT_TO not set - email not sent (preview only)")
+        return outcome
 
-# ============================================================
-# ENTRY POINT
-# ============================================================
-if __name__ == "__main__":
-    # Standalone execution - report based on current DB state
-    success = send_report()
-    sys.exit(0 if success else 1)
+    msg = build_email(pipeline_result, insights, chart_paths, config.REPORT_FROM, config.REPORT_TO)
+    outcome["sent"] = send_email(msg)
+    return outcome

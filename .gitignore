@@ -1,0 +1,20 @@
+# Runtime output (regenerated every run; uploaded as workflow artifacts instead)
+pipeline.log
+charts/
+reports/
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

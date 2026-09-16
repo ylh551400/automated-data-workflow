@@ -46,11 +46,11 @@ All configuration lives in `config.py` and can be overridden with environment va
 
 **Subject:** `✅ Daily Crypto Market Report 2026-09-16 | BTC $75.72K (-0.9%) | Top-100 cap $2.61T (+3.3% d/d)`
 
-The email contains a status banner, KPI tiles (market cap, volume, BTC), an alert box when thresholds are crossed, gainers/losers tables, rank changes and composition changes since the previous snapshot, the charts below, and a pipeline-health section with the per-rule filter counts.
+The email contains a status banner, KPI tiles (market cap, volume, BTC), an alert box when thresholds are crossed, gainers/losers tables, rank changes and composition changes since the previous snapshot, the charts shown below, and a pipeline-health section with the per-rule filter counts.
 
-| 24h movers | Market cap concentration |
-|---|---|
-| ![movers](docs/sample_movers.png) | ![concentration](<img width="1250" height="850" alt="Screenshot 2026-09-16 133615" src="https://github.com/user-attachments/assets/b1e99b81-da32-412b-8d1d-8e37e70462f0" />) |
+![Daily report email](docs/report_email.png)
+
+<img width="1250" height="850" alt="Market cap concentration chart" src="https://github.com/user-attachments/assets/b1e99b81-da32-412b-8d1d-8e37e70462f0" />
 
 Status is encoded in the subject so the inbox works as a monitor:
 
@@ -166,7 +166,7 @@ automated-data-workflow/
 ├── templates/report.html.j2 # email template
 ├── tests/                   # 48 unit tests, no network needed
 ├── data/market_snapshots.db # history (written by the workflow)
-├── docs/                    # sample chart images for this README
+├── docs/                    # report screenshot for this README
 ├── .env.example
 ├── requirements.txt
 └── requirements-dev.txt

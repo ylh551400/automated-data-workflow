@@ -1,0 +1,83 @@
+name: Daily market pipeline
+
+on:
+  schedule:
+    # 01:00 UTC every day = 09:00 Beijing / 21:00 US-Eastern (previous day)
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Replace today's snapshot if it already exists"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Build the report but do not send the email"
+        type: boolean
+        default: false
+
+# Never let two runs write the database at the same time
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # needed to commit the updated snapshot database
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline and send report
+        id: pipeline
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          REPORT_FROM: ${{ secrets.REPORT_FROM }}
+          REPORT_TO: ${{ secrets.REPORT_TO }}
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python main.py $ARGS
+
+      - name: Commit updated snapshot database
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/market_snapshots.db
+          if git diff --cached --quiet; then
+            echo "No database changes to commit"
+            exit 0
+          fi
+          git commit -m "data: market snapshot $(date -u +%F) [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload report, charts and log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ github.run_id }}
+          path: |
+            reports/
+            charts/
+            pipeline.log
+          retention-days: 14

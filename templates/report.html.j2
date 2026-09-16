@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} - {{ result.fetch_date }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f2;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0b0b0b;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f2;padding:24px 12px;">
+<tr><td align="center">
+<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%;background:#fcfcfb;border-radius:8px;border:1px solid #e1e0d9;">
+
+  {# ---------- Header ---------- #}
+  <tr><td style="padding:24px 28px 8px 28px;">
+    <div style="font-size:12px;color:#898781;text-transform:uppercase;letter-spacing:0.06em;">Automated data workflow</div>
+    <div style="font-size:22px;font-weight:600;margin-top:4px;">{{ title }}</div>
+    <div style="font-size:14px;color:#52514e;margin-top:2px;">Snapshot for {{ result.fetch_date }} (UTC)</div>
+  </td></tr>
+
+  {# ---------- Status ---------- #}
+  <tr><td style="padding:8px 28px 16px 28px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" style="background:{{ style.bg }};color:{{ style.fg }};border-radius:6px;">
+      <tr><td style="padding:10px 14px;font-size:14px;font-weight:600;">{{ style.icon }} {{ status }} &middot; {{ style.label }}</td></tr>
+    </table>
+    {% if result.error_message %}
+    <pre style="margin:12px 0 0 0;padding:12px;background:#fbeaea;border-left:3px solid #d03b3b;font-size:12px;white-space:pre-wrap;color:#0b0b0b;">{{ result.error_message }}</pre>
+    {% endif %}
+  </td></tr>
+
+  {% if insights %}
+  {# ---------- KPI row ---------- #}
+  <tr><td style="padding:0 28px 8px 28px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td width="33%" style="padding:12px;background:#f4f4f2;border-radius:6px;vertical-align:top;">
+          <div style="font-size:12px;color:#52514e;">Top-{{ insights.coins }} market cap</div>
+          <div style="font-size:22px;font-weight:600;margin-top:2px;">{{ insights.total_market_cap | usd }}</div>
+          <div style="font-size:12px;color:{{ insights.total_market_cap_change_pct | delta_color }};">
+            {% if insights.total_market_cap_change_pct is not none %}{{ insights.total_market_cap_change_pct | pct }} vs {{ insights.previous_date }}{% else %}no prior snapshot{% endif %}
+          </div>
+        </td>
+        <td width="8"></td>
+        <td width="33%" style="padding:12px;background:#f4f4f2;border-radius:6px;vertical-align:top;">
+          <div style="font-size:12px;color:#52514e;">24h volume</div>
+          <div style="font-size:22px;font-weight:600;margin-top:2px;">{{ insights.total_volume | usd }}</div>
+          <div style="font-size:12px;color:{{ insights.total_volume_change_pct | delta_color }};">
+            {% if insights.total_volume_change_pct is not none %}{{ insights.total_volume_change_pct | pct }} vs {{ insights.previous_date }}{% else %}no prior snapshot{% endif %}
+          </div>
+        </td>
+        <td width="8"></td>
+        <td width="33%" style="padding:12px;background:#f4f4f2;border-radius:6px;vertical-align:top;">
+          <div style="font-size:12px;color:#52514e;">Bitcoin</div>
+          <div style="font-size:22px;font-weight:600;margin-top:2px;">{{ insights.btc_price | price }}</div>
+          <div style="font-size:12px;color:{{ insights.btc_change_pct_24h | delta_color }};">{{ insights.btc_change_pct_24h | pct }} in 24h</div>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  {# ---------- Alerts ---------- #}
+  {% if insights.alerts or result.warnings %}
+  <tr><td style="padding:8px 28px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#fff7e0;border-left:3px solid #fab219;border-radius:4px;">
+      <tr><td style="padding:10px 14px;font-size:13px;">
+        <div style="font-weight:600;margin-bottom:4px;">&#9888;&#65039; Attention</div>
+        <ul style="margin:0;padding-left:18px;color:#52514e;">
+          {% for a in insights.alerts %}<li>{{ a }}</li>{% endfor %}
+          {% for w in result.warnings %}<li>{{ w }}</li>{% endfor %}
+        </ul>
+      </td></tr>
+    </table>
+  </td></tr>
+  {% endif %}
+
+  {# ---------- Movers ---------- #}
+  <tr><td style="padding:16px 28px 4px 28px;font-size:16px;font-weight:600;">24h movers</td></tr>
+  {% if images.movers %}
+  <tr><td style="padding:4px 28px;"><img src="{{ images.movers }}" alt="Top gainers and losers" width="584" style="width:100%;max-width:584px;height:auto;display:block;border-radius:4px;"></td></tr>
+  {% endif %}
+  <tr><td style="padding:8px 28px 16px 28px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">
+      <tr>
+        <td width="49%" style="vertical-align:top;">
+          <div style="font-size:12px;color:#898781;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Top gainers</div>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+            {% for r in insights.top_gainers %}
+            <tr>
+              <td style="padding:5px 0;color:#898781;width:28px;">#{{ r.market_cap_rank }}</td>
+              <td style="padding:5px 0;"><strong>{{ r.symbol }}</strong> <span style="color:#52514e;">{{ r.name }}</span></td>
+              <td style="padding:5px 0;text-align:right;color:#52514e;white-space:nowrap;">{{ r.current_price | price }}</td>
+              <td style="padding:5px 0 5px 8px;text-align:right;font-weight:600;white-space:nowrap;color:{{ r.price_change_pct_24h | delta_color }};">{{ r.price_change_pct_24h | pct }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+        </td>
+        <td width="2%"></td>
+        <td width="49%" style="vertical-align:top;">
+          <div style="font-size:12px;color:#898781;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Top losers</div>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+            {% for r in insights.top_losers %}
+            <tr>
+              <td style="padding:5px 0;color:#898781;width:28px;">#{{ r.market_cap_rank }}</td>
+              <td style="padding:5px 0;"><strong>{{ r.symbol }}</strong> <span style="color:#52514e;">{{ r.name }}</span></td>
+              <td style="padding:5px 0;text-align:right;color:#52514e;white-space:nowrap;">{{ r.current_price | price }}</td>
+              <td style="padding:5px 0 5px 8px;text-align:right;font-weight:600;white-space:nowrap;color:{{ r.price_change_pct_24h | delta_color }};">{{ r.price_change_pct_24h | pct }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  {# ---------- Composition changes ---------- #}
+  {% if insights.previous_date %}
+  <tr><td style="padding:8px 28px 4px 28px;font-size:16px;font-weight:600;">Changes since {{ insights.previous_date }}</td></tr>
+  <tr><td style="padding:4px 28px 16px 28px;font-size:13px;color:#52514e;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td width="50%" style="vertical-align:top;padding-right:8px;">
+          <div style="font-size:12px;color:#898781;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Rank climbers</div>
+          {% for r in insights.rank_climbers %}
+          <div style="padding:3px 0;"><strong style="color:#0b0b0b;">{{ r.symbol }}</strong> {{ r.name }} &nbsp;#{{ r.prev_rank }} &rarr; #{{ r.market_cap_rank }} <span style="color:#006300;">(+{{ r.rank_change }})</span></div>
+          {% else %}<div style="padding:3px 0;">No rank changes</div>{% endfor %}
+        </td>
+        <td width="50%" style="vertical-align:top;">
+          <div style="font-size:12px;color:#898781;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Rank fallers</div>
+          {% for r in insights.rank_fallers %}
+          <div style="padding:3px 0;"><strong style="color:#0b0b0b;">{{ r.symbol }}</strong> {{ r.name }} &nbsp;#{{ r.prev_rank }} &rarr; #{{ r.market_cap_rank }} <span style="color:#b32d2d;">({{ r.rank_change }})</span></div>
+          {% else %}<div style="padding:3px 0;">No rank changes</div>{% endfor %}
+        </td>
+      </tr>
+    </table>
+    {% if insights.new_entrants or insights.dropouts %}
+    <div style="margin-top:10px;">
+      {% if insights.new_entrants %}<div><strong style="color:#0b0b0b;">Entered top-{{ insights.coins }}:</strong> {% for r in insights.new_entrants %}{{ r.symbol }} (#{{ r.market_cap_rank }}){% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}
+      {% if insights.dropouts %}<div><strong style="color:#0b0b0b;">Dropped out:</strong> {% for r in insights.dropouts %}{{ r.symbol }} (was #{{ r.market_cap_rank }}){% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}
+    </div>
+    {% endif %}
+  </td></tr>
+  {% endif %}
+
+  {# ---------- Market cap ---------- #}
+  {% if images.market_cap %}
+  <tr><td style="padding:8px 28px 4px 28px;font-size:16px;font-weight:600;">Market cap concentration</td></tr>
+  <tr><td style="padding:4px 28px 16px 28px;"><img src="{{ images.market_cap }}" alt="Market cap by coin" width="584" style="width:100%;max-width:584px;height:auto;display:block;border-radius:4px;"></td></tr>
+  {% endif %}
+  {% if images.trend %}
+  <tr><td style="padding:8px 28px 4px 28px;font-size:16px;font-weight:600;">Trend</td></tr>
+  <tr><td style="padding:4px 28px 16px 28px;"><img src="{{ images.trend }}" alt="Total market cap over time" width="584" style="width:100%;max-width:584px;height:auto;display:block;border-radius:4px;"></td></tr>
+  {% endif %}
+  {% endif %}
+
+  {# ---------- Pipeline health ---------- #}
+  <tr><td style="padding:8px 28px 4px 28px;font-size:16px;font-weight:600;">Pipeline health</td></tr>
+  <tr><td style="padding:4px 28px 20px 28px;font-size:13px;">
+    {% set q = result.quality_metrics or {} %}
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">
+      <tr><td style="padding:4px 0;color:#52514e;">Records fetched from API</td><td style="padding:4px 0;text-align:right;font-weight:600;">{{ result.records_fetched | num }}</td></tr>
+      <tr><td style="padding:4px 0;color:#52514e;">Records passing quality rules</td><td style="padding:4px 0;text-align:right;font-weight:600;">{% if q %}{{ q.clean_records | num }}{% else %}n/a{% endif %}</td></tr>
+      <tr><td style="padding:4px 0;color:#52514e;">Records stored</td><td style="padding:4px 0;text-align:right;font-weight:600;">{{ result.records_stored | num }}</td></tr>
+      {% if q %}
+      <tr><td colspan="2" style="padding:8px 0 2px 0;color:#898781;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;">Filtered by rule</td></tr>
+      <tr><td style="padding:2px 0;color:#52514e;">Invalid price (&le; 0 or missing)</td><td style="text-align:right;">{{ q.invalid_price | num }}</td></tr>
+      <tr><td style="padding:2px 0;color:#52514e;">Invalid market cap</td><td style="text-align:right;">{{ q.invalid_market_cap | num }}</td></tr>
+      <tr><td style="padding:2px 0;color:#52514e;">Missing rank</td><td style="text-align:right;">{{ q.invalid_rank | num }}</td></tr>
+      <tr><td style="padding:2px 0;color:#52514e;">Invalid 24h change</td><td style="text-align:right;">{{ q.invalid_change | num }}</td></tr>
+      <tr><td style="padding:2px 0;color:#52514e;">Stale (not updated in 24h)</td><td style="text-align:right;">{{ q.stale_records | num }}</td></tr>
+      <tr><td style="padding:2px 0;color:#52514e;">Duplicates</td><td style="text-align:right;">{{ q.duplicates_removed | num }}</td></tr>
+      {% endif %}
+    </table>
+    {% if status == 'FAILED' %}
+    <div style="margin-top:12px;padding:10px 12px;background:#f4f4f2;border-radius:4px;color:#52514e;">
+      <strong style="color:#0b0b0b;">Next steps:</strong> open the workflow run logs, check the API status, then re-run the workflow manually (workflow_dispatch) once resolved.
+    </div>
+    {% elif status == 'SKIPPED' %}
+    <div style="margin-top:12px;padding:10px 12px;background:#f4f4f2;border-radius:4px;color:#52514e;">
+      Today&rsquo;s snapshot was already stored, so nothing was written. Re-run with <code>--force</code> to replace it.
+    </div>
+    {% endif %}
+  </td></tr>
+
+  {# ---------- Footer ---------- #}
+  <tr><td style="padding:14px 28px;border-top:1px solid #e1e0d9;font-size:11px;color:#898781;">
+    Generated {{ generated_at }} by <a href="{{ repo_url }}" style="color:#52514e;">automated-data-workflow</a> &middot; data: CoinGecko public API &middot; automated message, do not reply.
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>

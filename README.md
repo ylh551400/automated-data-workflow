@@ -1,226 +1,182 @@
 # Automated Data Workflow
 
-End-to-end automated data ETL pipeline with built-in data quality monitoring, error handling, and operational alerting, **eliminating manual monitoring effort**.
+A fully automated daily ETL + reporting pipeline. Every morning GitHub Actions pulls a market snapshot from a public API, validates it, stores it, compares it with yesterday, and emails an HTML report with charts. No server, no third-party scheduler, no manual step.
+
+[![Daily market pipeline](https://github.com/ylh551400/automated-data-workflow/actions/workflows/daily_pipeline.yml/badge.svg)](https://github.com/ylh551400/automated-data-workflow/actions/workflows/daily_pipeline.yml)
+[![CI](https://github.com/ylh551400/automated-data-workflow/actions/workflows/ci.yml/badge.svg)](https://github.com/ylh551400/automated-data-workflow/actions/workflows/ci.yml)
 
 ---
 
-## Project Overview
+## What it does
 
-This project demonstrates a **production-ready ETL + BI reporting pipeline** that:
+1. **Extract** the top-100 crypto assets from the [CoinGecko](https://www.coingecko.com/en/api) public API (retry with exponential backoff, honours rate-limit headers)
+2. **Validate** the response schema so an upstream API change fails loudly instead of silently corrupting data
+3. **Clean** with explicit data-quality rules; every dropped record is counted by rule
+4. **Load** one snapshot per UTC day into SQLite (idempotent: a re-run on the same day is a no-op unless `--force`)
+5. **Analyse** day-over-day: market cap change, top movers, rank climbers/fallers, coins entering or leaving the top 100
+6. **Report** by email: HTML with inline charts and a plain-text fallback; the subject line alone tells you the status and the headline numbers
+7. **Persist** the updated database back to the repository so history accumulates run after run
 
-1. Pulls product data from a public API (`FakeStoreAPI`)
-2. Validates schema integrity and data quality
-3. Stores clean data in a SQL database with deduplication
-4. Generates visualizations for business insights
-5. Sends automated reports with actionable metrics
-
-Built with Python and designed for integration with low-code automation tools (Make / Zapier).
-
----
-
-## Key Features
-
-| Feature | Description |
-|---------|-------------|
-| **Retry Mechanism** | 3x automatic retry with exponential backoff for API failures |
-| **Schema Validation** | Detects upstream API changes before they break downstream processes |
-| **Data Quality Rules** | Filters invalid records (negative prices, empty categories, out-of-range ratings) |
-| **Idempotency Check** | Prevents duplicate ingestion from accidental double-triggers |
-| **Metrics-Based Alerting** | Email reports include record counts, filtered records, and actionable next steps |
-| **Comprehensive Logging** | All operations logged to file + console for debugging |
+The data source changes every day, so the report always has something to say.
 
 ---
 
-## System Architecture
+## Architecture
 
 ```
-┌─────────────┐
-│  SCHEDULER  │  (Make / Zapier / Cron)
-└──────┬──────┘
-       ▼
-┌─────────────────────────────────────────────────────────┐
-│  main.py (Orchestrator)                                 │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │  data_pipeline.py                                  │ │
-│  │  ├─ HTTP GET: FakeStore API (with retry)          │ │
-│  │  ├─ Schema Validation                             │ │
-│  │  ├─ Data Quality Filtering                        │ │
-│  │  ├─ Idempotency Check                             │ │
-│  │  └─ SQLite Storage                                │ │
-│  └────────────────────────────────────────────────────┘ │
-│                         ▼                               │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │  send_report.py                                    │ │
-│  │  ├─ Collect DB Metrics                            │ │
-│  │  ├─ Generate Status-Based Email                   │ │
-│  │  └─ ✅ SUCCESS / ⚠️ SKIPPED / 🚨 FAILED           │ │
-│  └────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────┘
-       ▼
-┌─────────────┐
-│  dashboard  │  (Power BI / Matplotlib)
-└─────────────┘
+GitHub Actions (cron 01:00 UTC, or manual dispatch)
+        │
+        ▼
+main.py ── orchestrator, exit codes 0 / 1 / 2
+   │
+   ├─ data_pipeline.py   fetch → validate schema → quality rules → SQLite (idempotent)
+   ├─ insights.py        day-over-day comparison from stored snapshots
+   ├─ charts.py          matplotlib PNGs: movers, market-cap share, trend
+   └─ send_report.py     Jinja2 HTML email + inline images → SMTP
+        │
+        ├─ reports/latest_report.html   (workflow artifact, 14-day retention)
+        └─ data/market_snapshots.db     (committed back to the repo)
 ```
+
+All configuration lives in `config.py` and can be overridden with environment variables. Secrets are read from the environment only.
 
 ---
 
-## Tech Stack
+## Sample output
 
-| Layer | Tools |
-|-------|-------|
-| **Data Source** | [FakeStoreAPI](https://fakestoreapi.com/products) |
-| **Processing** | Python (pandas, requests) |
-| **Storage** | SQLite |
-| **Automation** | Make / Zapier (designed for integration) |
-| **Visualization** | Matplotlib / Power BI |
-| **Reporting** | smtplib (Gmail SMTP) |
+**Subject:** `✅ Daily Crypto Market Report 2026-09-16 | BTC $75.72K (-0.9%) | Top-100 cap $2.61T (+3.3% d/d)`
 
----
+The email contains a status banner, KPI tiles (market cap, volume, BTC), an alert box when thresholds are crossed, gainers/losers tables, rank changes and composition changes since the previous snapshot, the charts below, and a pipeline-health section with the per-rule filter counts.
 
-## File Structure
+| 24h movers | Market cap trend |
+|---|---|
+| ![movers](docs/sample_movers.png) | ![trend](docs/sample_trend.png) |
 
-```
-automated-data-workflow/
-├── main.py              # Orchestrator - runs full pipeline
-├── data_pipeline.py     # ETL: fetch, validate, clean, store
-├── send_report.py       # Notification with metrics
-├── dashboard.py         # Visualization generation
-├── requirements.txt
-├── pipeline.log         # Generated at runtime
-└── sales_data.db        # Generated at runtime
-```
+Status is encoded in the subject so the inbox works as a monitor:
+
+| Status | Subject prefix | When |
+|---|---|---|
+| SUCCESS | ✅ | New snapshot stored |
+| SKIPPED | ⚠️ | Today's snapshot already existed (double trigger) |
+| FAILED | 🚨 | API, schema or storage failure. Error text is in the body. |
 
 ---
 
-## Quick Start
+## Quick start (local)
 
-### 1. Clone the repo
 ```bash
 git clone https://github.com/ylh551400/automated-data-workflow.git
 cd automated-data-workflow
-```
-
-### 2. Install dependencies
-```bash
 pip install -r requirements.txt
+
+# Run everything, but only write reports/latest_report.html (no email)
+python main.py --dry-run
+
+# Replace today's snapshot if it already exists
+python main.py --force
 ```
 
-### 3. Run the full pipeline
+To actually send email locally, copy `.env.example` to `.env`, fill it in, and export the variables (or use a tool such as `direnv`). Without SMTP settings the pipeline still runs and writes the preview; it just logs that email was skipped.
+
 ```bash
-python main.py
-```
-
-### 4. Generate dashboard (optional)
-```bash
-# Interactive display
-python dashboard.py
-
-# Save charts as images
-python dashboard.py --save
+pip install -r requirements-dev.txt
+python -m pytest -q
 ```
 
 ---
 
-## Data Quality Rules
+## Scheduling with GitHub Actions
 
-The pipeline filters out records that fail these validations:
+The workflow in `.github/workflows/daily_pipeline.yml` runs at 01:00 UTC daily and can be triggered manually from the Actions tab with `force` and `dry_run` toggles.
 
-| Rule | Logic | Rationale |
-|------|-------|-----------|
-| Price validation | `price > 0` | Negative/zero prices indicate data errors |
-| Category validation | `category IS NOT NULL AND category != ''` | Empty categories break downstream grouping |
-| Rating validation | `0 <= rating <= 5` | Out-of-range ratings indicate corrupted data |
-| Deduplication | Unique `id` per batch | Prevents double-counting |
+**One-time setup**, in the repository settings under *Secrets and variables → Actions*:
 
-Filtered records are logged but not stored, with counts included in the daily report.
+| Secret | Value |
+|---|---|
+| `SMTP_USER` | Gmail address that sends the report |
+| `SMTP_PASSWORD` | A Gmail **App Password** (Google Account → Security → 2-Step Verification → App passwords). Regular passwords do not work. |
+| `REPORT_TO` | Comma-separated recipients |
+| `REPORT_FROM` | Optional, defaults to `SMTP_USER` |
+| `SMTP_HOST` / `SMTP_PORT` | Optional, default `smtp.gmail.com` / `587` |
+| `COINGECKO_API_KEY` | Optional demo key; anonymous access is enough for one call a day |
+
+Each run:
+
+1. installs dependencies and runs `python main.py`
+2. commits `data/market_snapshots.db` back to the branch (`[skip ci]` so the CI workflow does not re-trigger)
+3. uploads `reports/`, `charts/` and `pipeline.log` as a workflow artifact
+
+The job has `concurrency` set so two runs can never write the database at the same time, and a 15-minute timeout.
+
+### Why GitHub Actions instead of Make / Zapier
+
+The scheduler lives in the repository next to the code, is versioned, free, has run logs and retry built in, and needs no extra account. Low-code tools add a hop and a hidden dependency for no benefit in a pipeline that is already fully scripted.
 
 ---
 
-## Email Report Example
+## Data quality rules
 
-**Subject:** `✅ Daily Pipeline SUCCESS | 20 records | 2024-01-15`
+| Rule | Logic | Why |
+|---|---|---|
+| Price | `current_price > 0` and numeric | Zero or null price means a broken listing |
+| Market cap | `market_cap > 0` and numeric | Needed for every share and total calculation |
+| Rank | `market_cap_rank` present | Rank drives ordering and day-over-day comparison |
+| 24h change | present and `> -100` | Missing or impossible values break the movers table |
+| Freshness | `last_updated` within 24h | Stale rows would masquerade as today's data |
+| Uniqueness | one row per `coin_id` per day | Prevents double counting |
+
+Filtered counts per rule are logged and shown in the email. If fewer than 90 clean records remain (configurable), the report carries a warning.
+
+---
+
+## Error handling and exit codes
+
+| Scenario | Behaviour |
+|---|---|
+| Timeout, connection error, HTTP 5xx | Retry up to 4 times, backoff 5s → 10s → 20s |
+| HTTP 429 | Retry, waiting at least `Retry-After` seconds |
+| HTTP 4xx (other), invalid JSON | Fail immediately (retrying cannot help) |
+| Schema change | Pipeline fails; FAILED email with the missing field names |
+| Fewer clean records than expected | Pipeline continues; warning in email |
+| Same-day re-run | Storage skipped; SKIPPED email |
+| SMTP not configured | Report written to `reports/`, email skipped, exit 0 |
+| SMTP configured but delivery fails | Exit 2 so the workflow run turns red |
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Success or skipped |
+| 1 | Pipeline failed (a FAILED report was still generated) |
+| 2 | Report delivery failed |
+
+---
+
+## Project structure
 
 ```
-==================================================
-AUTOMATED DATA PIPELINE REPORT
-==================================================
-
-Timestamp: 2024-01-15 09:00:15
-Status: SUCCESS
-
-------------------------------
-TODAY'S INGESTION
-------------------------------
-Records fetched from API: 20
-Records stored to DB: 20
-
-Data Quality Summary:
-  - Raw records: 20
-  - Invalid price filtered: 0
-  - Invalid category filtered: 0
-  - Invalid rating filtered: 0
-  - Duplicates removed: 0
-  - Clean records: 20
-
-------------------------------
-DATABASE SUMMARY
-------------------------------
-Total records in DB: 140
-Records added today: 20
-Average price: $109.95
-Categories: electronics, jewelery, men's clothing, women's clothing
-Data range: 2024-01-08 to 2024-01-15
-
-------------------------------
-NEXT STEPS
-------------------------------
-✓ No action required - pipeline healthy
-✓ Dashboard should refresh automatically
+automated-data-workflow/
+├── .github/workflows/
+│   ├── daily_pipeline.yml   # scheduled ETL + email + DB commit
+│   └── ci.yml               # pytest on push / PR (Python 3.10 and 3.12)
+├── config.py                # all settings, env-overridable
+├── main.py                  # orchestrator
+├── data_pipeline.py         # extract / validate / clean / load
+├── insights.py              # day-over-day analysis
+├── charts.py                # matplotlib charts
+├── send_report.py           # HTML email + SMTP
+├── templates/report.html.j2 # email template
+├── tests/                   # 48 unit tests, no network needed
+├── data/market_snapshots.db # history (written by the workflow)
+├── docs/                    # sample chart images for this README
+├── .env.example
+├── requirements.txt
+└── requirements-dev.txt
 ```
 
 ---
 
-## Error Handling
+## Possible next steps
 
-| Scenario | Behavior |
-|----------|----------|
-| API timeout / 5xx error | Retry up to 3 times with 5s delay |
-| API schema change | Halt pipeline, send alert email |
-| All records filtered | Warning in logs + email, pipeline continues |
-| Already ingested today | Skip storage, send "SKIPPED" status email |
-| SMTP failure | Log error, exit with code 2 |
-
----
-
-## Automation Integration (Make / Zapier)
-
-This pipeline is designed to be triggered by external schedulers:
-
-| Step | Module | Configuration |
-|------|--------|---------------|
-| 1 | **Scheduler** | Daily trigger (e.g., 9:00 AM) |
-| 2 | **Code/SSH Module** | Execute `python main.py` |
-| 3 | **Error Router** | Check exit code (0=success, 1=pipeline fail, 2=report fail) |
-| 4 | **Slack/Email** | Forward alerts on non-zero exit |
-
----
-
-## Monitoring Checklist (Operations Perspective)
-
-For teams running this in production:
-
-- [ ] **Daily:** Check email report for record counts and anomalies
-- [ ] **Weekly:** Review `pipeline.log` for warning patterns
-- [ ] **Monthly:** Validate data quality trends in dashboard
-- [ ] **On Alert:** If email shows 0 records or FAILED status, check API availability first
-
----
-
-## Future Improvements
-
-- [ ] Migrate from SQLite to cloud database (BigQuery/Snowflake) for team collaboration
-- [ ] Add Slack webhook for real-time failure alerts
-- [ ] Implement data versioning for rollback capability
-- [ ] Add unit tests for data validation functions
-
- 
+- Slack or Teams webhook alongside email for FAILED runs
+- Move storage from SQLite-in-git to a hosted Postgres (Supabase, Neon) once history grows
+- Weekly digest with 7-day charts built from the same snapshots
+- Anomaly detection on volume spikes per coin

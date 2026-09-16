@@ -1,96 +1,78 @@
 """
-Main Orchestrator Script
-- Runs the complete pipeline: Ingest -> Validate -> Store -> Report
-- Integrates data_pipeline and send_report modules
-- Provides single entry point for automation tools (Make/Zapier)
+Orchestrator - single entry point for the scheduler (GitHub Actions, cron, ...).
+
+    python main.py             run pipeline, build report, send email
+    python main.py --dry-run   same, but only write reports/latest_report.html
+    python main.py --force     replace today's snapshot if it already exists
+
+Exit codes: 0 success/skipped, 1 pipeline failed, 2 report delivery failed.
 """
 
-import sys
+import argparse
 import logging
-from datetime import datetime
+import sys
 
-# Import pipeline modules
-from data_pipeline import run_pipeline
+import config
+from charts import generate_charts
+from data_pipeline import connect, run_pipeline
+from insights import build_insights
 from send_report import send_report
 
-# ============================================================
-# LOGGING SETUP
-# ============================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('pipeline.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("main")
 
 
-# ============================================================
-# MAIN ORCHESTRATOR
-# ============================================================
-def main():
-    """
-    Execute full automated workflow:
-    1. Run data pipeline (fetch, validate, store)
-    2. Generate and send report with pipeline results
-    
-    Exit codes:
-        0: Success
-        1: Pipeline failed
-        2: Report failed
-    """
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the automated data workflow")
+    parser.add_argument("--force", action="store_true", help="replace today's snapshot if present")
+    parser.add_argument("--dry-run", action="store_true", help="build the report but do not send email")
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    config.setup_logging()
     logger.info("=" * 60)
-    logger.info("AUTOMATED DATA WORKFLOW - STARTING")
-    logger.info(f"Execution time: {datetime.now().isoformat()}")
+    logger.info("AUTOMATED DATA WORKFLOW - STARTING (force=%s, dry_run=%s)", args.force, args.dry_run)
     logger.info("=" * 60)
-    
-    pipeline_result = None
-    
-    # Step 1: Run data pipeline
+
+    # Step 1: ETL
+    logger.info("Step 1/3: data pipeline")
+    result = run_pipeline(force=args.force)
+
+    # Step 2: insights + charts (only meaningful when data exists)
+    insights, charts = None, {}
+    if result["status"] != "FAILED":
+        logger.info("Step 2/3: insights and charts")
+        try:
+            conn = connect()
+            try:
+                insights = build_insights(conn, result["fetch_date"])
+            finally:
+                conn.close()
+            charts = generate_charts(insights, config.CHART_DIR)
+        except Exception as exc:  # noqa: BLE001 - report must still go out
+            logger.exception("Insights/charts failed: %s", exc)
+            result["warnings"].append(f"Insights or charts could not be generated: {exc}")
+
+    # Step 3: report (always, so failures are visible in the inbox)
+    logger.info("Step 3/3: report")
     try:
-        logger.info("Step 1/2: Running data pipeline...")
-        pipeline_result = run_pipeline()
-        
-    except Exception as e:
-        logger.error(f"Pipeline execution failed: {e}")
-        pipeline_result = {
-            'status': 'FAILED',
-            'timestamp': datetime.now().isoformat(),
-            'records_fetched': 0,
-            'records_stored': 0,
-            'quality_metrics': {},
-            'error_message': str(e)
-        }
-    
-    # Step 2: Send report (always send, even on failure)
-    try:
-        logger.info("Step 2/2: Sending report notification...")
-        report_sent = send_report(pipeline_result)
-        
-        if not report_sent:
-            logger.warning("Report notification may have failed")
-            
-    except Exception as e:
-        logger.error(f"Report sending failed: {e}")
+        outcome = send_report(result, insights, charts, dry_run=args.dry_run)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Report generation failed: %s", exc)
         return 2
-    
-    # Final status
+
     logger.info("=" * 60)
-    logger.info("AUTOMATED DATA WORKFLOW - COMPLETE")
-    logger.info(f"Final status: {pipeline_result.get('status', 'UNKNOWN')}")
+    logger.info("WORKFLOW COMPLETE - status=%s email_sent=%s preview=%s",
+                result["status"], outcome["sent"], outcome["preview"])
     logger.info("=" * 60)
-    
-    # Return appropriate exit code
-    if pipeline_result.get('status') == 'FAILED':
+
+    if result["status"] == "FAILED":
         return 1
+    if not outcome["sent"] and outcome["skipped_reason"] is None:
+        return 2  # SMTP configured but delivery failed
     return 0
 
 
-# ============================================================
-# ENTRY POINT
-# ============================================================
 if __name__ == "__main__":
-    exit_code = main()
-    sys.exit(exit_code)
+    sys.exit(main())

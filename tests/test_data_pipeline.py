@@ -182,6 +182,12 @@ def test_fetch_rejects_non_list_payload():
 
 
 # ---------------------------------------------------------------- end to end (no network)
+@pytest.fixture(autouse=True)
+def frozen_clock(monkeypatch, now):
+    """Pin the pipeline clock to the fixtures' timestamp so freshness checks don't depend on the real date."""
+    monkeypatch.setattr(dp, "utc_now", lambda: now)
+
+
 def test_run_pipeline_success_and_skip(monkeypatch, tmp_path):
     monkeypatch.setattr(dp, "fetch_market_data", lambda *a, **k: make_market(95))
     db = tmp_path / "db.sqlite"

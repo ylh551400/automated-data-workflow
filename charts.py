@@ -7,6 +7,8 @@ a single sequential hue for magnitude, text always in ink colours.
 """
 
 import logging
+import math
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib
@@ -28,6 +30,8 @@ UP = "#2a78d6"      # diverging cool pole
 DOWN = "#e34948"    # diverging warm pole
 SERIES = "#2a78d6"  # sequential / single-series hue
 OTHER = "#c3c2b7"   # residual bucket
+
+MAX_DATE_LABELS = 15  # trend chart: beyond this many days, label every Nth day
 
 plt.rcParams.update({
     "font.family": "sans-serif",
@@ -138,6 +142,24 @@ def chart_market_cap(insights: dict, path: Path) -> Path | None:
     return _save(fig, path)
 
 
+def date_ticks(dates: list[str], max_labels: int = MAX_DATE_LABELS) -> tuple[list[int], list[str]]:
+    """
+    Tick positions and short "Sep 16" labels for a daily axis.
+    Past `max_labels` days, label every Nth day, counting back from the
+    latest so the most recent snapshot is always labelled.
+    """
+    step = max(1, math.ceil(len(dates) / max_labels))
+    positions = list(range(len(dates)))[::-1][::step][::-1]
+    labels = [short_date(dates[i]) for i in positions]
+    return positions, labels
+
+
+def short_date(iso_date: str, with_year: bool = False) -> str:
+    """'2026-09-01' -> 'Sep 1' (or 'Sep 1, 2026'). Portable: no platform-specific strftime flags."""
+    d = datetime.strptime(iso_date, "%Y-%m-%d")
+    return f"{d:%b} {d.day}, {d.year}" if with_year else f"{d:%b} {d.day}"
+
+
 def chart_market_cap_trend(insights: dict, path: Path) -> Path | None:
     """Total market cap of the stored set over time. Needs at least two days."""
     history = insights.get("history", [])
@@ -153,13 +175,15 @@ def chart_market_cap_trend(insights: dict, path: Path) -> Path | None:
     ax.plot(x, caps, color=SERIES, linewidth=2, solid_joinstyle="round", solid_capstyle="round",
             marker="o", markersize=8, markerfacecolor=SERIES, markeredgecolor=SURFACE, markeredgewidth=2)
     ax.fill_between(x, caps, min(caps) * 0.98, color=SERIES, alpha=0.10, linewidth=0)
-    step = max(1, len(dates) // 8)
-    ax.set_xticks(list(x)[::step], dates[::step], rotation=0)
+    ax.set_xticks(*date_ticks(dates))
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: compact_usd(v)))
     _style_axes(ax, grid_axis="y")
     ax.margins(x=0.04)
     ax.text(x[-1], caps[-1], f"  {compact_usd(caps[-1])}", va="center", fontsize=10, color=INK)
-    ax.set_title(f"Total market cap of the top {insights['coins']} - last {len(dates)} snapshots")
+    same_year = dates[0][:4] == dates[-1][:4]
+    span = f"{short_date(dates[0], with_year=not same_year)} - {short_date(dates[-1], with_year=True)}"
+    ax.set_title(f"Total market cap of the top {insights['coins']}, {span}")
     return _save(fig, path)
 
 

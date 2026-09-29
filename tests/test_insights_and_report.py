@@ -69,6 +69,34 @@ def test_trend_chart_skipped_with_one_day(two_day_db, tmp_path):
     assert {"movers", "market_cap"} <= set(out)
 
 
+def test_date_ticks_labels_every_day_up_to_limit():
+    dates = [f"2026-09-{d:02d}" for d in range(16, 30)]  # 14 days
+    positions, labels = charts.date_ticks(dates)
+    assert positions == list(range(14))
+    assert labels[0] == "Sep 16" and labels[-1] == "Sep 29"
+
+
+def test_date_ticks_thins_long_history_and_keeps_latest():
+    dates = [f"2026-09-{d:02d}" for d in range(1, 31)]  # 30 days
+    positions, labels = charts.date_ticks(dates, max_labels=15)
+    assert len(positions) <= 15
+    assert positions[-1] == 29 and labels[-1] == "Sep 30"
+    assert all(b - a == 2 for a, b in zip(positions, positions[1:]))
+
+
+def test_short_date_drops_leading_zero():
+    assert charts.short_date("2026-09-01") == "Sep 1"
+    assert charts.short_date("2026-12-31", with_year=True) == "Dec 31, 2026"
+
+
+def test_trend_chart_renders_month_of_history(tmp_path):
+    history = [{"fetch_date": f"2026-09-{d:02d}", "total_market_cap": 2.6e12 + d * 1e10}
+               for d in range(1, 31)]
+    ins = {"history": history, "coins": 100}
+    out = charts.chart_market_cap_trend(ins, tmp_path / "trend.png")
+    assert out and out.stat().st_size > 1000
+
+
 def test_charts_with_no_insights(tmp_path):
     assert charts.generate_charts(None, tmp_path) == {}
 
